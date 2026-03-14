@@ -14,17 +14,15 @@ st.set_page_config(page_title="PPT 자동 번역 생성기", layout="centered")
 st.title("PPT 자동 번역 생성기")
 st.caption("사진 업로드 + 한국어 입력 → 중국어/베트남어/미얀마어 번역 후 PPT 생성")
 
-st.subheader("1. Gemini API 키")
+# Streamlit Secrets에서 Gemini API 키 자동 읽기
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    st.success("번역 API 연결 완료")
+except Exception:
+    api_key = ""
+    st.error("GEMINI_API_KEY가 설정되지 않았습니다. Streamlit Cloud Secrets를 확인하세요.")
 
-default_api_key = " "
-
-api_key = st.text_input(
-    "Gemini API Key 입력",
-    value=default_api_key,
-    type="password",
-)
-
-st.subheader("2. 템플릿 확인")
+st.subheader("1. 템플릿 확인")
 
 template_path = "templates/sample_template.pptx"
 
@@ -34,7 +32,7 @@ if not os.path.exists(template_path):
 
 st.success("템플릿 정상 확인")
 
-st.subheader("3. 사진 업로드")
+st.subheader("2. 사진 업로드")
 
 uploaded_images = st.file_uploader(
     "사진 업로드",
@@ -45,7 +43,7 @@ uploaded_images = st.file_uploader(
 if uploaded_images:
     st.success(f"{len(uploaded_images)}장 업로드됨")
 
-    st.subheader("4. 속도 설정")
+    st.subheader("3. 속도 설정")
 
     max_size = st.selectbox(
         "사진 해상도 최적화",
@@ -61,7 +59,7 @@ if uploaded_images:
         format_func=lambda x: f"JPEG 품질 {x}"
     )
 
-    st.subheader("5. 사진별 한국어 문구 입력")
+    st.subheader("4. 사진별 한국어 문구 입력")
 
     ko_texts = []
 
@@ -86,7 +84,7 @@ if uploaded_images:
 
     if generate:
         if not api_key:
-            st.error("Gemini API 키가 필요합니다.")
+            st.error("Gemini API 키가 설정되지 않았습니다.")
             st.stop()
 
         empty_indexes = [i + 1 for i, txt in enumerate(ko_texts) if not txt.strip()]

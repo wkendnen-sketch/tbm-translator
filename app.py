@@ -9,144 +9,164 @@ from services.translator import translate_batch
 from services.ppt_editor import fill_template_ppt
 from services.image_utils import optimize_image
 
-st.set_page_config(page_title="PPT 자동 번역 생성기", layout="centered")
 
-st.title("PPT 자동 번역 생성기")
-st.caption("사진 업로드 + 한국어 입력 → 중국어/베트남어/미얀마어 번역 후 PPT 생성")
+st.set_page_config(page_title="다국어 PPT 생성", layout="centered")
 
-# Streamlit Secrets에서 Gemini API 키 자동 읽기
+st.title("다국어 PPT 생성")
+st.caption("사진과 문구를 넣으면 PPT를 만듭니다.")
+
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
-    st.success("번역 API 연결 완료")
 except Exception:
     api_key = ""
-    st.error("GEMINI_API_KEY가 설정되지 않았습니다. Streamlit Cloud Secrets를 확인하세요.")
-
-st.subheader("1. 템플릿 확인")
 
 template_path = "templates/sample_template.pptx"
 
 if not os.path.exists(template_path):
-    st.error("templates/sample_template.pptx 파일이 없습니다.")
+    st.error("필수 파일이 없습니다.")
     st.stop()
 
-st.success("템플릿 정상 확인")
 
-st.subheader("2. 사진 업로드")
+# 이미지 최적화 고정값
+FIXED_MAX_SIZE = 1600
+FIXED_QUALITY = 88
 
-uploaded_images = st.file_uploader(
-    "사진 업로드",
+
+def normalize_uploaded_files(files):
+    normalized = []
+    for idx, file in enumerate(files):
+        normalized.append(
+            {
+                "id": f"{file.name}_{file.size}_{idx}",
+                "name": file.name,
+                "bytes": file.getvalue(),
+            }
+        )
+    return normalized
+
+
+if "uploaded_items" not in st.session_state:
+    st.session_state.uploaded_items = []
+
+if "text_map" not in st.session_state:
+    st.session_state.text_map = {}
+
+
+new_files = st.file_uploader(
+    "사진 등록",
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True
 )
 
-if uploaded_images:
-    st.success(f"{len(uploaded_images)}장 업로드됨")
+if new_files:
+    existing_ids = {item["id"] for item in st.session_state.uploaded_items}
+    for item in normalize_uploaded_files(new_files):
+        if item["id"] not in existing_ids:
+            st.session_state.uploaded_items.append(item)
 
-    st.subheader("3. 속도 설정")
+uploaded_items = st.session_state.uploaded_items
 
-    max_size = st.selectbox(
-        "사진 해상도 최적화",
-        options=[1200, 1600, 1920],
-        index=1,
-        format_func=lambda x: f"긴 변 {x}px"
-    )
 
-    jpeg_quality = st.selectbox(
-        "사진 품질",
-        options=[75, 82, 88],
-        index=1,
-        format_func=lambda x: f"JPEG 품질 {x}"
-    )
+if uploaded_items:
+    kept_items = []
 
-    st.subheader("4. 사진별 한국어 문구 입력")
-
-    ko_texts = []
-
-    for idx, img_file in enumerate(uploaded_images, start=1):
-        col1, col2 = st.columns([1, 2])
+    for idx, item in enumerate(uploaded_items, start=1):
+        col1, col2, col3 = st.columns([1.2, 2.4, 1])
 
         with col1:
-            st.image(img_file, caption=f"사진 {idx}", width=180)
+            st.image(item["bytes"], width=140)
 
         with col2:
-            st.markdown(f"**{img_file.name}**")
-            text = st.text_input(
-                f"사진 {idx} 설명",
-                key=f"text_{idx}",
+            current_text = st.session_state.text_map.get(item["id"], "")
+            new_text = st.text_input(
+                f"{idx}번 문구",
+                value=current_text,
+                key=f"text_{item['id']}",
                 placeholder="예: 지정된 이동통로 통행",
-                label_visibility="collapsed"
+                label_visibility="collapsed",
             )
+            st.session_state.text_map[item["id"]] = new_text
+            st.markdown(f"<div style='font-size:12px; color:#666;'>{item['name']}</div>", unsafe_allow_html=True)
 
-        ko_texts.append(text)
+        with col3:
+            if st.button(f"{idx}번 삭제", key=f"delete_{item['id']}", use_container_width=True):
+                st.session_state.text_map.pop(item["id"], None)
+            else:
+                kept_items.append(item)
 
-    generate = st.button("PPT 생성", use_container_width=True)
+    st.session_state.uploaded_items = kept_items
+    uploaded_items = kept_items
 
-    if generate:
-        if not api_key:
-            st.error("Gemini API 키가 설정되지 않았습니다.")
-            st.stop()
+    if uploaded_items:
+        generate = st.button("PPT 만들기", use_container_width=True)
 
-        empty_indexes = [i + 1 for i, txt in enumerate(ko_texts) if not txt.strip()]
-        if empty_indexes:
-            st.error(f"설명이 없는 사진 번호: {empty_indexes}")
-            st.stop()
+        if generate:
+            if not api_key:
+                st.error("설정을 확인해 주세요.")
+                st.stop()
 
-        try:
-            with st.spinner("번역 및 PPT 생성 중..."):
-                image_paths = []
+            ko_texts = []
+            empty_indexes = []
 
-                for img in uploaded_images:
-                    suffix = Path(img.name).suffix.lower()
-                    if not suffix:
-                        suffix = ".jpg"
+            for i, item in enumerate(uploaded_items, start=1):
+                txt = st.session_state.text_map.get(item["id"], "").strip()
+                if not txt:
+                    empty_indexes.append(i)
+                ko_texts.append(txt)
 
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                        tmp.write(img.read())
-                        original_path = tmp.name
+            if empty_indexes:
+                st.error(f"문구가 비어 있는 사진: {empty_indexes}")
+                st.stop()
 
-                    optimized_path = optimize_image(
-                        input_path=original_path,
-                        max_size=max_size,
-                        jpeg_quality=jpeg_quality
+            try:
+                with st.spinner("만드는 중..."):
+                    image_paths = []
+
+                    for item in uploaded_items:
+                        suffix = Path(item["name"]).suffix.lower()
+                        if not suffix:
+                            suffix = ".jpg"
+
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(item["bytes"])
+                            original_path = tmp.name
+
+                        optimized_path = optimize_image(
+                            input_path=original_path,
+                            max_size=FIXED_MAX_SIZE,
+                            jpeg_quality=FIXED_QUALITY
+                        )
+
+                        image_paths.append(optimized_path)
+
+                    items = [{"ko": txt} for txt in ko_texts]
+
+                    translated_items = translate_batch(
+                        items=items,
+                        api_key=api_key
                     )
 
-                    image_paths.append(optimized_path)
+                    output_path = fill_template_ppt(
+                        template_path=template_path,
+                        image_paths=image_paths,
+                        translated_items=translated_items
+                    )
 
-                items = [{"ko": txt.strip()} for txt in ko_texts]
+                with open(output_path, "rb") as f:
+                    st.download_button(
+                        label="PPT 다운로드",
+                        data=f,
+                        file_name="result.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True
+                    )
 
-                translated_items = translate_batch(
-                    items=items,
-                    api_key=api_key
-                )
+            except Exception as e:
+                st.error(f"오류 발생: {str(e)}")
+                st.code(traceback.format_exc())
 
-                output_path = fill_template_ppt(
-                    template_path=template_path,
-                    image_paths=image_paths,
-                    translated_items=translated_items
-                )
-
-            st.success("PPT 생성 완료")
-
-            with open(output_path, "rb") as f:
-                st.download_button(
-                    label="PPT 다운로드",
-                    data=f,
-                    file_name="result.pptx",
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                )
-
-            st.subheader("번역 결과 확인")
-            for idx, item in enumerate(translated_items, start=1):
-                with st.expander(f"사진 {idx} 번역 보기"):
-                    st.write(f"한국어: {item['ko']}")
-                    st.write(f"중국어: {item['zh']}")
-                    st.write(f"베트남어: {item['vi']}")
-                    st.write(f"미얀마어: {item['my']}")
-
-        except Exception as e:
-            st.error(f"오류 발생: {str(e)}")
-            st.code(traceback.format_exc())
+    else:
+        st.info("등록된 사진이 없습니다.")
 
 else:
-    st.info("사진을 업로드하세요.")
+    st.info("사진을 등록하세요.")
